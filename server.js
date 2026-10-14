@@ -1,140 +1,85 @@
 const WebSocket = require('ws');
 
-const wss = new WebSocket.Server({ port: process.env.PORT || 10000 });
+const wss = new WebSocket.Server({ port: 8080 });
 
-console.log('✅ Servidor FalaPX rodando!');
-console.log('🚀 Aguardando conexões...');
+const canais = {};
+const quemEstaFalando = {};
 
-const usuarios = new Map();
-const falandoNoCanal = new Map();
+console.log('✅ Servidor FalaPX rodando na porta 8080');
 
 wss.on('connection', (ws) => {
-  let meuNome = null;
-  let meuCanal = null;
+    let meuNome = null;
+    let meuCanal = null;
 
-  console.log('🔌 Nova conexão recebida');
+    ws.on('message', (dados) => {
+        try {
+            const msg = JSON.parse(dados.toString());
 
-  ws.on('message', (dados) => {
-    try {
-      const msg = JSON.parse(dados.toString());
-      console.log(`📩 Recebido: ${msg.tipo}`, msg.canal || '');
-      
-      switch (msg.tipo) {
-        
-        case 'ENTRAR':
-          meuNome = msg.nome;
-          usuarios.set(meuNome, { ws, nome: meuNome, lat: msg.lat || 0, lon: msg.lon || 0 });
-          console.log(`✅ ${meuNome} conectou`);
-          enviarListaUsuarios();
-          break;
+            switch (msg.tipo) {
+                case 'ENTRAR':
+                    meuNome = msg.nome;
+                    console.log(`👤 ${meuNome} conectou`);
+                    break;
 
-        case 'ENTRAR_CANAL':
-          meuCanal = msg.canal;
-          console.log(`📻 ${meuNome} entrou no canal ${meuCanal}`);
-          
-          // ✅ Resposta GARANTIDA pro app saber que entrou com sucesso
-          ws.send(JSON.stringify({
-            tipo: 'ENTRADA_CANAL_OK',
-            canal: meuCanal
-          }));
-          console.log(`📤 Enviado confirmação do canal ${meuCanal}`);
-          break;
+                case 'ENTRAR_CANAL':
+                    meuCanal = msg.canal;
+                    if (!canais[meuCanal]) canais[meuCanal] = {};
+                    canais[meuCanal][meuNome] = ws;
+                    console.log(`📻 ${meuNome} entrou no Canal ${meuCanal}`);
+                    ws.send(JSON.stringify({ tipo: 'ENTRADA_CANAL_OK', canal: meuCanal }));
+                    break;
 
-        case 'SAIR_CANAL':
-          if (meuCanal && falandoNoCanal.get(meuCanal) === meuNome) {
-            falandoNoCanal.delete(meuCanal);
-            avisarTodosNoCanal(msg.canal, {
-              tipo: 'FIM_FALA',
-              canal: msg.canal
-            });
-          }
-          meuCanal = null;
-          break;
+                case 'SAIR_CANAL':
+                    if (meuCanal && canais[meuCanal]) delete canais[meuCanal][meuNome];
+                    if (quemEstaFalando[meuCanal] === meuNome) {
+                        delete quemEstaFalando[meuCanal];
+                        avisarTodosCanal(meuCanal, { tipo: 'FIM_FALA', quem: meuNome, canal: meuCanal });
+                    }
+                    meuCanal = null;
+                    break;
 
-        case 'INICIO_FALA':
-          if (!falandoNoCanal.has(msg.canal)) {
-            falandoNoCanal.set(msg.canal, msg.quem);
-            avisarTodosNoCanal(msg.canal, {
-              tipo: 'INICIO_FALA',
-              quem: msg.quem,
-              canal: msg.canal
-            });
-          }
-          break;
+                case 'INICIO_FALA':
+                    meuCanal = msg.canal;
+                    if (!quemEstaFalando[meuCanal]) {
+                        quemEstaFalando[meuCanal] = meuNome;
+                        console.log(`🔊 ${meuNome} falando no Canal ${meuCanal}`);
+                        avisarTodosCanal(meuCanal, { tipo: 'INICIO_FALA', quem: meuNome, canal: meuCanal }, meuNome);
+                    }
+                    break;
 
-        case 'FIM_FALA':
-          if (falandoNoCanal.get(msg.canal) === msg.quem) {
-            falandoNoCanal.delete(msg.canal);
-            avisarTodosNoCanal(msg.canal, {
-              tipo: 'FIM_FALA',
-              canal: msg.canal
-            });
-          }
-          break;
+                case 'FIM_FALA':
+                    meuCanal = msg.canal;
+                    if (quemEstaFalando[meuCanal] === meuNome) {
+                        delete quemEstaFalando[meuCanal];
+                        console.log(`🔇 ${meuNome} parou no Canal ${meuCanal}`);
+                        avisarTodosCanal(meuCanal, { tipo: 'FIM_FALA', quem: meuNome, canal: meuCanal }, meuNome);
+                    }
+                    break;
 
-        case 'AUDIO_DATA':
-          if (meuCanal) {
-            avisarTodosNoCanal(meuCanal, {
-              tipo: 'AUDIO_DATA',
-              dados: msg.dados
-            }, meuNome);
-          }
-          break;
-
-        case 'ATUALIZAR_LOCALIZACAO':
-          if (usuarios.has(msg.nome)) {
-            const user = usuarios.get(msg.nome);
-            user.lat = msg.lat;
-            user.lon = msg.lon;
-            enviarListaUsuarios();
-          }
-          break;
-      }
-    } catch (erro) {
-      console.log('❌ Erro:', erro.message);
-    }
-  });
-
-  ws.on('close', (codigo, razao) => {
-    console.log(`🔌 Conexão fechada: ${codigo} ${razao}`);
-    if (meuNome) {
-      console.log(`❌ ${meuNome} desconectou`);
-      if (meuCanal && falandoNoCanal.get(meuCanal) === meuNome) {
-        falandoNoCanal.delete(meuCanal);
-        avisarTodosNoCanal(meuCanal, { tipo: 'FIM_FALA', canal: meuCanal });
-      }
-      usuarios.delete(meuNome);
-      enviarListaUsuarios();
-    }
-  });
-
-  ws.on('error', (erro) => {
-    console.log('⚠️ Erro na conexão:', erro.message);
-  });
-
-  function enviarListaUsuarios() {
-    const lista = Array.from(usuarios.values()).map(u => ({
-      nome: u.nome,
-      lat: u.lat,
-      lon: u.lon
-    }));
-    usuarios.forEach(user => {
-      if (user.ws.readyState === WebSocket.OPEN) {
-        user.ws.send(JSON.stringify({
-          tipo: 'LISTA_USUARIOS',
-          usuarios: lista
-        }));
-      }
+                case 'AUDIO_DATA':
+                    avisarTodosCanal(meuCanal, { tipo: 'AUDIO_DATA', dados: msg.dados }, meuNome);
+                    break;
+            }
+        } catch (erro) {
+            console.log('❌ Erro:', erro.message);
+        }
     });
-  }
 
-  function avisarTodosNoCanal(canal, mensagem, ignorarNome = null) {
-    usuarios.forEach((user, nome) => {
-      if (nome !== ignorarNome && user.ws.readyState === WebSocket.OPEN) {
-        user.ws.send(JSON.stringify(mensagem));
-      }
+    ws.on('close', () => {
+        console.log(`❌ ${meuNome} desconectou`);
+        if (meuCanal && canais[meuCanal]) delete canais[meuCanal][meuNome];
+        if (meuCanal && quemEstaFalando[meuCanal] === meuNome) {
+            delete quemEstaFalando[meuCanal];
+            avisarTodosCanal(meuCanal, { tipo: 'FIM_FALA', quem: meuNome, canal: meuCanal });
+        }
     });
-  }
+
+    function avisarTodosCanal(numeroCanal, mensagem, exceto = null) {
+        if (!canais[numeroCanal]) return;
+        for (const nome in canais[numeroCanal]) {
+            if (nome !== exceto && canais[numeroCanal][nome].readyState === WebSocket.OPEN) {
+                canais[numeroCanal][nome].send(JSON.stringify(mensagem));
+            }
+        }
+    }
 });
-
-console.log('✅ Servidor pronto! Aguardando conexões...');
