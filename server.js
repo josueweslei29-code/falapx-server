@@ -9,13 +9,11 @@ console.log(`Servidor rodando na porta ${PORT}`);
 wss.on('connection', (ws) => {
   console.log('Novo cliente conectado');
 
-  ws.on('message', (message) => {
-    console.log('Mensagem recebida:', message);
-    
-    // Encaminha a mensagem para todos os outros clientes
+  ws.on('message', (data) => {
+    // Encaminha TUDO — texto E áudio binário
     wss.clients.forEach((client) => {
       if (client !== ws && client.readyState === WebSocket.OPEN) {
-        client.send(message);
+        client.send(data);
       }
     });
   });
