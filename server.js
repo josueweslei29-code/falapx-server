@@ -5,7 +5,7 @@ const wss = new WebSocket.Server({ port: 8080 });
 const canais = {};
 const falando = {};
 
-console.log('✅ Servidor FalaPX online na porta 8080');
+console.log('✅ Servidor FalaPX rodando na porta 8080');
 
 wss.on('connection', (ws) => {
   let nome = null;
