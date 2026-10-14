@@ -1,91 +1,100 @@
 const WebSocket = require('ws');
 const PORT = process.env.PORT || 8080;
 
-// Armazena todos os clientes conectados
-const clientes = new Map(); // chave: conexão, valor: { nome, id }
+// Armazena: conexão → { id, nome }
+const clientes = new Map();
+// Mapa para garantir que cada nome só aparece UMA vez: nome → conexão ativa
+const nomeParaConexao = new Map();
 let idContador = 1;
-let quemEstaFalando = null; // nome de quem está transmitindo agora
+let quemEstaFalando = null;
 
-// Inicia o servidor
 const wss = new WebSocket.Server({ port: PORT });
 console.log('📻 Servidor FalaPX iniciado na porta', PORT);
 
-// Quando alguém se conecta
 wss.on('connection', (ws) => {
     const id = idContador++;
     const cliente = { id, nome: null };
     clientes.set(ws, cliente);
-    
-    console.log(`✅ Novo cliente conectado — ID: ${id}`);
+    console.log(`✅ Cliente conectado — ID: ${id}`);
 
-    // Recebe mensagem do cliente
     ws.on('message', (dados) => {
         try {
-            // Tenta interpretar como texto (comandos)
             const texto = dados.toString();
-            const primeiraLetra = texto.slice(0, 1);
-            
-            // Se começar com { é JSON = comando
-            if (primeiraLetra === '{') {
+            if (texto.startsWith('{')) {
                 const mensagem = JSON.parse(texto);
                 processarComando(ws, mensagem);
             } else {
-                // Senão é áudio binário = encaminha
                 if (quemEstaFalando === cliente.nome) {
                     enviarParaTodos(dados, ws);
                 }
             }
-        } catch (erro) {
-            // Se não for texto, é áudio = encaminha
+        } catch {
             if (quemEstaFalando === cliente.nome) {
                 enviarParaTodos(dados, ws);
             }
         }
     });
 
-    // Quando alguém sai
     ws.on('close', () => {
         const nome = cliente.nome;
         console.log(`❌ Cliente desconectado — ID: ${id}, Nome: ${nome || 'sem nome'}`);
         
+        // Remove dos dois mapas
         clientes.delete(ws);
-        
-        // Se quem saiu estava falando, libera todos
-        if (quemEstaFalando === nome) {
-            quemEstaFalando = null;
-            avisarFimFala();
+        if (nome) {
+            // Só remove se for a conexão atual desse nome
+            if (nomeParaConexao.get(nome) === ws) {
+                nomeParaConexao.delete(nome);
+            }
+            // Se quem saiu estava falando, libera
+            if (quemEstaFalando === nome) {
+                quemEstaFalando = null;
+                avisarFimFala();
+            }
         }
-        
-        // Atualiza lista para os que ficaram
         enviarListaUsuarios();
     });
 
     ws.on('error', (erro) => {
-        console.log('⚠️ Erro na conexão:', erro.message);
+        console.log('⚠️ Erro:', erro.message);
     });
 });
 
-// 📋 PROCESSAR COMANDOS
 function processarComando(ws, msg) {
     const cliente = clientes.get(ws);
     if (!cliente) return;
 
     switch (msg.tipo) {
-        // Usuário entrou com seu nome
         case 'ENTRAR':
-            cliente.nome = msg.nome;
-            console.log(`👤 ${msg.nome} entrou na sala`);
+            const nomeNovo = msg.nome.trim();
+            
+            // 🔑 SE ESSE NOME JÁ ESTÁ CONECTADO → REMOVE O ANTIGO PRIMEIRO
+            if (nomeParaConexao.has(nomeNovo)) {
+                const conexaoAntiga = nomeParaConexao.get(nomeNovo);
+                if (conexaoAntiga !== ws) {
+                    console.log(`🔄 ${nomeNovo} reconectando — substituindo conexão antiga`);
+                    // Marca a antiga como desconectada sem fechar a conexão abruptamente
+                    clientes.delete(conexaoAntiga);
+                    if (quemEstaFalando === nomeNovo) {
+                        quemEstaFalando = null;
+                        avisarFimFala();
+                    }
+                }
+            }
+            
+            // Registra a NOVA conexão para este nome
+            cliente.nome = nomeNovo;
+            nomeParaConexao.set(nomeNovo, ws);
+            console.log(`👤 ${nomeNovo} entrou`);
             enviarListaUsuarios();
             break;
 
-        // Começou a falar
         case 'INICIO_FALA':
             if (!quemEstaFalando) {
                 quemEstaFalando = msg.quem;
                 avisarInicioFala(msg.quem);
-                console.log(`🔊 ${msg.quem} começou a transmitir`);
+                console.log(`🔊 ${msg.quem} está transmitindo`);
             } else {
-                // Alguém já está falando — avisa que está ocupado
                 ws.send(JSON.stringify({
                     tipo: 'AVISO',
                     mensagem: `${quemEstaFalando} está falando — aguarde!`
@@ -93,7 +102,6 @@ function processarComando(ws, msg) {
             }
             break;
 
-        // Terminou de falar
         case 'FIM_FALA':
             if (quemEstaFalando === msg.quem) {
                 quemEstaFalando = null;
@@ -104,39 +112,29 @@ function processarComando(ws, msg) {
     }
 }
 
-// 📡 Enviar lista de usuários para todos
 function enviarListaUsuarios() {
     const lista = [];
-    clientes.forEach((cli) => {
-        if (cli.nome) lista.push(cli.nome);
+    nomeParaConexao.forEach((conexao, nome) => {
+        // Só inclui se a conexão ainda está aberta
+        if (conexao.readyState === WebSocket.OPEN) {
+            lista.push(nome);
+        } else {
+            // Limpa entradas órfãs
+            nomeParaConexao.delete(nome);
+        }
     });
     
-    const mensagem = JSON.stringify({
-        tipo: 'LISTA_USUARIOS',
-        lista: lista
-    });
-    
-    enviarParaTodos(mensagem);
+    enviarParaTodos(JSON.stringify({ tipo: 'LISTA_USUARIOS', lista }));
 }
 
-// 🔊 Avisar: alguém começou a falar
 function avisarInicioFala(nomeQuem) {
-    const mensagem = JSON.stringify({
-        tipo: 'INICIO_FALA',
-        quem: nomeQuem
-    });
-    enviarParaTodos(mensagem);
+    enviarParaTodos(JSON.stringify({ tipo: 'INICIO_FALA', quem: nomeQuem }));
 }
 
-// 🔇 Avisar: alguém terminou de falar
 function avisarFimFala() {
-    const mensagem = JSON.stringify({
-        tipo: 'FIM_FALA'
-    });
-    enviarParaTodos(mensagem);
+    enviarParaTodos(JSON.stringify({ tipo: 'FIM_FALA' }));
 }
 
-// 📤 Enviar algo para TODOS os conectados (exceto quem enviou, no caso de áudio)
 function enviarParaTodos(dados, remetente = null) {
     clientes.forEach((cli, conexao) => {
         if (conexao !== remetente && conexao.readyState === WebSocket.OPEN) {
@@ -145,5 +143,4 @@ function enviarParaTodos(dados, remetente = null) {
     });
 }
 
-console.log('✅ Servidor FalaPX PRONTO e ESCUTANDO na porta', PORT);
-console.log('📍 Aguardando conexões...');
+console.log('✅ Servidor FalaPX PRONTO — Aguardando conexões...');
