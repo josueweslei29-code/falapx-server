@@ -2,8 +2,8 @@ const WebSocket = require('ws');
 
 const wss = new WebSocket.Server({ port: process.env.PORT || 10000 });
 
-console.log('✅ Servidor FalaPX iniciado...');
-console.log('🚀 Rodando na porta:', process.env.PORT || 10000);
+console.log('✅ Servidor FalaPX rodando!');
+console.log('🚀 Aguardando conexões...');
 
 const usuarios = new Map();
 const falandoNoCanal = new Map();
@@ -12,9 +12,12 @@ wss.on('connection', (ws) => {
   let meuNome = null;
   let meuCanal = null;
 
+  console.log('🔌 Nova conexão recebida');
+
   ws.on('message', (dados) => {
     try {
       const msg = JSON.parse(dados.toString());
+      console.log(`📩 Recebido: ${msg.tipo}`, msg.canal || '');
       
       switch (msg.tipo) {
         
@@ -27,14 +30,23 @@ wss.on('connection', (ws) => {
 
         case 'ENTRAR_CANAL':
           meuCanal = msg.canal;
-          console.log(`📻 ${meuNome} → Canal ${meuCanal}`);
-          ws.send(JSON.stringify({ tipo: 'ENTRADA_CANAL_OK', canal: meuCanal }));
+          console.log(`📻 ${meuNome} entrou no canal ${meuCanal}`);
+          
+          // ✅ Resposta GARANTIDA pro app saber que entrou com sucesso
+          ws.send(JSON.stringify({
+            tipo: 'ENTRADA_CANAL_OK',
+            canal: meuCanal
+          }));
+          console.log(`📤 Enviado confirmação do canal ${meuCanal}`);
           break;
 
         case 'SAIR_CANAL':
           if (meuCanal && falandoNoCanal.get(meuCanal) === meuNome) {
             falandoNoCanal.delete(meuCanal);
-            avisarTodosNoCanal(msg.canal, { tipo: 'FIM_FALA', canal: msg.canal });
+            avisarTodosNoCanal(msg.canal, {
+              tipo: 'FIM_FALA',
+              canal: msg.canal
+            });
           }
           meuCanal = null;
           break;
@@ -42,20 +54,30 @@ wss.on('connection', (ws) => {
         case 'INICIO_FALA':
           if (!falandoNoCanal.has(msg.canal)) {
             falandoNoCanal.set(msg.canal, msg.quem);
-            avisarTodosNoCanal(msg.canal, { tipo: 'INICIO_FALA', quem: msg.quem, canal: msg.canal });
+            avisarTodosNoCanal(msg.canal, {
+              tipo: 'INICIO_FALA',
+              quem: msg.quem,
+              canal: msg.canal
+            });
           }
           break;
 
         case 'FIM_FALA':
           if (falandoNoCanal.get(msg.canal) === msg.quem) {
             falandoNoCanal.delete(msg.canal);
-            avisarTodosNoCanal(msg.canal, { tipo: 'FIM_FALA', canal: msg.canal });
+            avisarTodosNoCanal(msg.canal, {
+              tipo: 'FIM_FALA',
+              canal: msg.canal
+            });
           }
           break;
 
         case 'AUDIO_DATA':
           if (meuCanal) {
-            avisarTodosNoCanal(meuCanal, { tipo: 'AUDIO_DATA', dados: msg.dados }, meuNome);
+            avisarTodosNoCanal(meuCanal, {
+              tipo: 'AUDIO_DATA',
+              dados: msg.dados
+            }, meuNome);
           }
           break;
 
@@ -73,7 +95,8 @@ wss.on('connection', (ws) => {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (codigo, razao) => {
+    console.log(`🔌 Conexão fechada: ${codigo} ${razao}`);
     if (meuNome) {
       console.log(`❌ ${meuNome} desconectou`);
       if (meuCanal && falandoNoCanal.get(meuCanal) === meuNome) {
@@ -85,11 +108,22 @@ wss.on('connection', (ws) => {
     }
   });
 
+  ws.on('error', (erro) => {
+    console.log('⚠️ Erro na conexão:', erro.message);
+  });
+
   function enviarListaUsuarios() {
-    const lista = Array.from(usuarios.values()).map(u => ({ nome: u.nome, lat: u.lat, lon: u.lon }));
+    const lista = Array.from(usuarios.values()).map(u => ({
+      nome: u.nome,
+      lat: u.lat,
+      lon: u.lon
+    }));
     usuarios.forEach(user => {
       if (user.ws.readyState === WebSocket.OPEN) {
-        user.ws.send(JSON.stringify({ tipo: 'LISTA_USUARIOS', usuarios: lista }));
+        user.ws.send(JSON.stringify({
+          tipo: 'LISTA_USUARIOS',
+          usuarios: lista
+        }));
       }
     });
   }
@@ -102,3 +136,5 @@ wss.on('connection', (ws) => {
     });
   }
 });
+
+console.log('✅ Servidor pronto! Aguardando conexões...');
